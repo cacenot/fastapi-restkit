@@ -1,6 +1,6 @@
 [project]
 name = "fastapi-restkit"
-version = "0.1.0"
+version = "0.1.1"
 description = "Pagination utilities for FastAPI with SQLModel ORM"
 readme = "README.md"
 license = "MIT"
@@ -49,6 +49,8 @@ dev = [
     "httpx>=0.24.0",
     "mypy>=1.0.0",
     "ruff>=0.4.0",
+    "build>=1.4.0",
+    "twine>=6.2.0",
 ]
 
 # ============================================================
