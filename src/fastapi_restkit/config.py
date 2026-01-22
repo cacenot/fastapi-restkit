@@ -18,6 +18,10 @@ class RestKitSettings:
     # PostgreSQL unaccent extension flag
     UNACCENT_AVAILABLE: bool = False
 
+    # PyPI publishing (for development/CI)
+    PYPI_TOKEN: str | None = None
+    PYPI_TEST_TOKEN: str | None = None
+
     @classmethod
     def from_env(cls) -> "RestKitSettings":
         """Load settings from environment variables."""
@@ -26,6 +30,10 @@ class RestKitSettings:
             instance.DEFAULT_PAGE_SIZE = int(page_size)
         if max_page_size := os.getenv("RESTKIT_MAX_PAGE_SIZE"):
             instance.MAX_PAGE_SIZE = int(max_page_size)
+        if pypi_token := os.getenv("PYPI_TOKEN"):
+            instance.PYPI_TOKEN = pypi_token
+        if pypi_test_token := os.getenv("PYPI_TEST_TOKEN"):
+            instance.PYPI_TEST_TOKEN = pypi_test_token
         return instance
 
 
