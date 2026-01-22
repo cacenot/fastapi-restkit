@@ -7,7 +7,7 @@ Usage:
     python scripts/bump_version.py minor   # 0.1.0 -> 0.2.0
     python scripts/bump_version.py major   # 0.1.0 -> 1.0.0
     python scripts/bump_version.py 0.2.5   # Set specific version
-    
+
 Options:
     --dry-run    Show what would be changed without modifying files
     --tag        Create git tag after bump
@@ -46,20 +46,20 @@ def parse_version(version: str) -> tuple[int, int, int]:
 def bump_version(current: str, bump_type: str) -> str:
     """
     Bump version based on type.
-    
+
     Args:
         current: Current version string (e.g., "0.1.0")
         bump_type: One of "major", "minor", "patch" or a specific version
-        
+
     Returns:
         New version string
     """
     # If bump_type looks like a version, use it directly
     if re.match(r"^\d+\.\d+\.\d+", bump_type):
         return bump_type
-    
+
     major, minor, patch = parse_version(current)
-    
+
     if bump_type == "major":
         return f"{major + 1}.0.0"
     elif bump_type == "minor":
@@ -67,7 +67,9 @@ def bump_version(current: str, bump_type: str) -> str:
     elif bump_type == "patch":
         return f"{major}.{minor}.{patch + 1}"
     else:
-        raise ValueError(f"Invalid bump type: {bump_type}. Use major, minor, patch, or a version number.")
+        raise ValueError(
+            f"Invalid bump type: {bump_type}. Use major, minor, patch, or a version number."
+        )
 
 
 def update_pyproject(pyproject_path: Path, old_version: str, new_version: str) -> None:
@@ -92,16 +94,16 @@ def git_commit_and_tag(version: str, tag: bool = False, push: bool = False) -> N
     """Commit version change and optionally create tag."""
     # Stage pyproject.toml
     run_command(["git", "add", "pyproject.toml"])
-    
+
     # Commit
     run_command(["git", "commit", "-m", f"chore: bump version to {version}"])
     print(f"  ✓ Committed version bump")
-    
+
     if tag:
         tag_name = f"v{version}"
         run_command(["git", "tag", "-a", tag_name, "-m", f"Release {version}"])
         print(f"  ✓ Created tag: {tag_name}")
-    
+
     if push:
         run_command(["git", "push"])
         print(f"  ✓ Pushed commits")
@@ -143,30 +145,30 @@ Examples:
         action="store_true",
         help="Push changes and tag to remote (implies --tag)",
     )
-    
+
     args = parser.parse_args()
-    
+
     # --push implies --tag
     if args.push:
         args.tag = True
-    
+
     project_root = get_project_root()
     pyproject_path = project_root / "pyproject.toml"
-    
+
     if not pyproject_path.exists():
         print(f"Error: {pyproject_path} not found")
         return 1
-    
+
     try:
         current_version = read_current_version(pyproject_path)
         new_version = bump_version(current_version, args.bump_type)
     except ValueError as e:
         print(f"Error: {e}")
         return 1
-    
+
     print(f"\n📦 fastapi-restkit version bump")
     print(f"   {current_version} → {new_version}\n")
-    
+
     if args.dry_run:
         print("🔍 Dry run - no changes made")
         print(f"   Would update: {pyproject_path}")
@@ -175,11 +177,11 @@ Examples:
         if args.push:
             print(f"   Would push to remote")
         return 0
-    
+
     # Update pyproject.toml
     update_pyproject(pyproject_path, current_version, new_version)
     print(f"✓ Updated {pyproject_path.name}")
-    
+
     # Git operations
     if args.tag or args.push:
         print("\n📝 Git operations:")
@@ -188,16 +190,16 @@ Examples:
         except subprocess.CalledProcessError as e:
             print(f"\n❌ Git command failed: {e.stderr}")
             return 1
-    
+
     print(f"\n✅ Version bumped to {new_version}")
-    
+
     if not args.tag:
         print(f"\nNext steps:")
         print(f"  git add pyproject.toml")
         print(f"  git commit -m 'chore: bump version to {new_version}'")
         print(f"  git tag -a v{new_version} -m 'Release {new_version}'")
         print(f"  git push && git push --tags")
-    
+
     return 0
 
 

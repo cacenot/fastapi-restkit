@@ -250,7 +250,7 @@ def sorting_as_query(sorting_cls: type[TSortingSet]) -> Callable[..., TSortingSe
             default=None,
             alias="sort_by",
             description=description,
-            example=example,
+            examples=example,
         ),
     ) -> TSortingSet:
         values = list(sort_by_values) if sort_by_values else []
