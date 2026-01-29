@@ -9,6 +9,7 @@ import logging
 from collections.abc import Callable
 from typing import (
     Any,
+    Literal,
     Optional,
     TypeVar,
     Union,
@@ -17,7 +18,8 @@ from typing import (
 )
 
 from fastapi import Query
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
+from sqlalchemy.orm import Load, defer, joinedload, load_only, selectinload
 from sqlalchemy.sql import ColumnElement
 from sqlmodel import SQLModel, and_, or_
 
@@ -87,7 +89,46 @@ class FilterSet(BaseModel):
         or_conditions = filters.to_sqlalchemy(Permission, use_or=True)
         query = select(Permission).where(*or_conditions)
         ```
+
+    Expansion and omission of relationships and columns:
+        FilterSet also supports expanding SQLModel relationships via query params
+        and configuration on the FilterSet Config class.
+
+        - expand: Relationship names to eager-load
+        - omit: Relationship or column names to exclude
+
+        Config options:
+            expandable: Dict of {api_name: relationship_path}
+                - api_name is the query parameter name
+                - relationship_path is the attribute path on the SQLModel
+                - if a value is omitted, api_name is used as the path
+
+            default_expand: Set or list of api_names expanded by default
+            default_joined: Set or list of api_names that use joinedload
+            expand_all: If True, expands all expandable fields by default
+
+            column_fields: Dict of {api_name: column_path}
+                - api_name is the query parameter name
+                - column_path is the attribute path on the SQLModel
+                - if a value is omitted, api_name is used as the path
+
+            column_omit_mode: Strategy for column omission
+                - "defer" (default): defers omitted columns
+                - "load_only": loads only non-omitted columns
     """
+
+    expand: list[str] = Field(
+        default_factory=list,
+        description="Relationships to expand (eager load)",
+    )
+    only: list[str] = Field(
+        default_factory=list,
+        description="Only include these relationships or columns",
+    )
+    omit: list[str] = Field(
+        default_factory=list,
+        description="Relationships or columns to omit",
+    )
 
     class Config:
         """Configuration for FilterSet."""
@@ -97,6 +138,22 @@ class FilterSet(BaseModel):
 
         # Model class for type checking
         model_class: type[SQLModel] | None = None
+
+        # Relationship expansion configuration
+        # Map api_name -> relationship path on the model
+        expandable: dict[str, str] = {}
+        # Expand all expandable relationships by default
+        expand_all: bool = False
+        # Expand these relationships by default
+        default_expand: set[str] | list[str] = set()
+        # Use joinedload for these relationships (allowlist)
+        default_joined: set[str] | list[str] = set()
+
+        # Column omission configuration
+        # Map api_name -> column path on the model
+        column_fields: dict[str, str] = {}
+        # Strategy for omitting columns: "defer" or "load_only"
+        column_omit_mode: Literal["defer", "load_only"] = "defer"
 
     def model_post_init(self, __context: Any) -> None:
         """
@@ -154,6 +211,314 @@ class FilterSet(BaseModel):
                     active[field_name] = filter_instance
 
         return active
+
+    def get_expandable_fields(self) -> dict[str, str]:
+        """
+        Get the expandable relationship mapping from Config.
+
+        Returns:
+            Dict of api_name -> relationship_path
+        """
+        if not hasattr(self, "Config"):
+            return {}
+        expandable = getattr(self.Config, "expandable", {}) or {}
+        normalized: dict[str, str] = {}
+
+        for name, path in expandable.items():
+            if path:
+                normalized[name] = path
+            else:
+                normalized[name] = name
+        return normalized
+
+    def get_column_fields(self) -> dict[str, str]:
+        """
+        Get the omittable column mapping from Config.
+
+        Returns:
+            Dict of api_name -> column_path
+        """
+        if not hasattr(self, "Config"):
+            return {}
+        column_fields = getattr(self.Config, "column_fields", {}) or {}
+        normalized: dict[str, str] = {}
+
+        for name, path in column_fields.items():
+            if path:
+                normalized[name] = path
+            else:
+                normalized[name] = name
+        return normalized
+
+    def _get_default_expand(self) -> set[str]:
+        if not hasattr(self, "Config"):
+            return set()
+        default_expand = getattr(self.Config, "default_expand", set()) or set()
+        return set(default_expand)
+
+    def _get_default_joined(self) -> set[str]:
+        if not hasattr(self, "Config"):
+            return set()
+        default_joined = getattr(self.Config, "default_joined", set()) or set()
+        return set(default_joined)
+
+    def resolve_omit_fields(self) -> tuple[set[str], set[str]]:
+        """
+        Resolve omit fields into relationship and column sets.
+
+        Returns:
+            Tuple of (relationship_omits, column_omits)
+
+        Raises:
+            InvalidFormatError: If omit includes invalid fields
+        """
+        expandable = self.get_expandable_fields()
+        column_fields = self.get_column_fields()
+        omits = set(self.omit or [])
+
+        invalid_omits = omits - set(expandable.keys()) - set(column_fields.keys())
+        if invalid_omits:
+            valid_fields = set(expandable.keys()) | set(column_fields.keys())
+            raise InvalidFormatError(
+                field="omit",
+                details={
+                    "invalid_fields": sorted(invalid_omits),
+                    "valid_fields": sorted(valid_fields),
+                },
+            )
+
+        relationship_omits = omits & set(expandable.keys())
+        column_omits = omits & set(column_fields.keys())
+        return relationship_omits, column_omits
+
+    def resolve_only_fields(self) -> tuple[set[str], set[str]]:
+        """
+        Resolve only fields into relationship and column sets.
+
+        Returns:
+            Tuple of (relationship_only, column_only)
+
+        Raises:
+            InvalidFormatError: If only includes invalid fields
+        """
+        expandable = self.get_expandable_fields()
+        column_fields = self.get_column_fields()
+        only_fields = set(self.only or [])
+
+        if not only_fields:
+            return set(), set()
+
+        if not expandable and not column_fields:
+            raise InvalidFormatError(
+                field="only",
+                details={"reason": "No fields are configured for only"},
+            )
+
+        valid_fields = set(expandable.keys()) | set(column_fields.keys())
+        invalid_only = only_fields - valid_fields
+        if invalid_only:
+            raise InvalidFormatError(
+                field="only",
+                details={
+                    "invalid_fields": sorted(invalid_only),
+                    "valid_fields": sorted(valid_fields),
+                },
+            )
+
+        relationship_only = only_fields & set(expandable.keys())
+        column_only = only_fields & set(column_fields.keys())
+        return relationship_only, column_only
+
+    def resolve_expands(self) -> set[str]:
+        """
+        Resolve expand fields based on Config and query params.
+
+        Returns:
+            Set of api_names to expand
+
+        Raises:
+            InvalidFormatError: If requested expand/omit includes invalid fields
+        """
+        expandable = self.get_expandable_fields()
+        if not expandable and self.expand:
+            raise InvalidFormatError(
+                field="expand",
+                details={"reason": "No expandable relationships are configured"},
+            )
+
+        only_relations, _ = self.resolve_only_fields()
+        expand_all = bool(getattr(self.Config, "expand_all", False))
+        default_expand = self._get_default_expand()
+
+        if only_relations:
+            base = set()
+            requested = set(only_relations)
+        else:
+            base = set(expandable.keys()) if expand_all else set(default_expand)
+            requested = set(self.expand or [])
+        omits, _ = self.resolve_omit_fields()
+        resolved = base | requested
+
+        invalid_expands = resolved - set(expandable.keys())
+        if invalid_expands:
+            raise InvalidFormatError(
+                field="expand",
+                details={
+                    "invalid_fields": sorted(invalid_expands),
+                    "valid_fields": sorted(expandable.keys()),
+                },
+            )
+
+        return resolved - omits
+
+    def to_sqlalchemy_column_options(self, model_class: type[SQLModel]) -> list[Load]:
+        """
+        Build SQLAlchemy load options for omitting columns.
+
+        Args:
+            model_class: SQLModel class to load columns from
+
+        Returns:
+            List of SQLAlchemy Load options
+        """
+        column_fields = self.get_column_fields()
+        if not column_fields:
+            return []
+
+        _, column_only = self.resolve_only_fields()
+        omit_mode = getattr(self.Config, "column_omit_mode", "defer")
+        options: list[Load] = []
+
+        if column_only:
+            columns = [
+                self._get_column(model_class, column_fields[name])
+                for name in sorted(column_only)
+            ]
+            options.append(load_only(*columns))
+            return options
+
+        _, column_omits = self.resolve_omit_fields()
+        if not column_omits:
+            return []
+
+        if omit_mode == "load_only":
+            include_names = set(column_fields.keys()) - column_omits
+            if not include_names:
+                return []
+            columns = [
+                self._get_column(model_class, column_fields[name])
+                for name in sorted(include_names)
+            ]
+            options.append(load_only(*columns))
+            return options
+
+        if omit_mode == "defer":
+            for name in sorted(column_omits):
+                column = self._get_column(model_class, column_fields[name])
+                options.append(defer(column))
+            return options
+
+        raise InvalidFormatError(
+            field="omit",
+            details={"invalid_mode": omit_mode, "expected": ["defer", "load_only"]},
+        )
+
+    def to_sqlalchemy_load_options(self, model_class: type[SQLModel]) -> list[Load]:
+        """
+        Build SQLAlchemy load options for expanded relationships.
+
+        Args:
+            model_class: SQLModel class to load relationships from
+
+        Returns:
+            List of SQLAlchemy Load options
+        """
+        expandable = self.get_expandable_fields()
+        expands = self.resolve_expands()
+        default_joined = self._get_default_joined()
+        options: list[Load] = []
+
+        for api_name in sorted(expands):
+            path = expandable[api_name]
+            use_joined = api_name in default_joined
+            options.append(self._build_load_option(model_class, path, use_joined))
+
+        return options
+
+    def apply_expands_to_query(self, query, model_class: type[SQLModel]):
+        """
+        Apply relationship expansion and column omission options to a query.
+
+        Args:
+            query: SQLAlchemy select query
+            model_class: SQLModel class to load relationships from
+
+        Returns:
+            Query with eager loading and column options applied
+        """
+        options = self.to_sqlalchemy_load_options(model_class)
+        options.extend(self.to_sqlalchemy_column_options(model_class))
+        if options:
+            return query.options(*options)
+        return query
+
+    def _build_load_option(
+        self, model_class: type[SQLModel], relationship_path: str, use_joined: bool
+    ) -> Load:
+        """
+        Build a SQLAlchemy load option for a relationship path.
+
+        Args:
+            model_class: SQLModel class to load from
+            relationship_path: Dot notation path (e.g. "author.company")
+            use_joined: Use joinedload when True, else selectinload
+
+        Returns:
+            SQLAlchemy Load option
+
+        Raises:
+            InvalidFormatError: If relationship path is invalid
+        """
+        parts = relationship_path.split(".")
+        if not parts:
+            raise InvalidFormatError(
+                field="expand",
+                details={"invalid_path": relationship_path},
+            )
+
+        if not hasattr(model_class, parts[0]):
+            raise InvalidFormatError(
+                field="expand",
+                details={"invalid_path": relationship_path},
+            )
+
+        current_attr = getattr(model_class, parts[0])
+        option: Load
+        option = joinedload(current_attr) if use_joined else selectinload(current_attr)
+
+        current_model = model_class
+        for part in parts[1:]:
+            if not hasattr(current_attr, "property") or not hasattr(
+                current_attr.property, "mapper"
+            ):
+                raise InvalidFormatError(
+                    field="expand",
+                    details={"invalid_path": relationship_path},
+                )
+
+            current_model = current_attr.property.mapper.class_
+            if not hasattr(current_model, part):
+                raise InvalidFormatError(
+                    field="expand",
+                    details={"invalid_path": relationship_path},
+                )
+            current_attr = getattr(current_model, part)
+            if use_joined:
+                option = option.joinedload(current_attr)
+            else:
+                option = option.selectinload(current_attr)
+
+        return option
 
     def to_sqlalchemy(
         self, model_class: type[SQLModel], use_or: bool = False
@@ -677,6 +1042,22 @@ def _build_fallback_filter_params(
     return True
 
 
+def _normalize_list_values(values: list[str] | None) -> list[str]:
+    """Normalize list values from query params, supporting CSV and repeated args."""
+    if not values:
+        return []
+
+    normalized: list[str] = []
+    for value in values:
+        if value is None:
+            continue
+        for part in str(value).split(","):
+            item = part.strip()
+            if item:
+                normalized.append(item)
+    return normalized
+
+
 def filter_as_query(filter_cls: type[TFilterSet]) -> Callable[..., TFilterSet]:
     """
     Create a FastAPI dependency that documents FilterSet query params.
@@ -703,7 +1084,68 @@ def filter_as_query(filter_cls: type[TFilterSet]) -> Callable[..., TFilterSet]:
         _build_fallback_filter_params,
     ]
 
+    expandable = (
+        getattr(filter_cls.Config, "expandable", {})
+        if hasattr(filter_cls, "Config")
+        else {}
+    )
+    expand_fields = list(expandable.keys()) if expandable else []
+    expand_description = "Relationships to expand (eager load)."
+    if expand_fields:
+        expand_description += "\n\n**Available relationships**\n" + "\n".join(
+            [f"- `{name}`" for name in expand_fields]
+        )
+
+    params.append(
+        inspect.Parameter(
+            "expand_values",
+            inspect.Parameter.KEYWORD_ONLY,
+            default=Query(
+                default=None,
+                alias="expand",
+                description=expand_description,
+            ),
+            annotation=Optional[list[str]],
+        )
+    )
+    params.append(
+        inspect.Parameter(
+            "only_values",
+            inspect.Parameter.KEYWORD_ONLY,
+            default=Query(
+                default=None,
+                alias="only",
+                description="Only include these relationships or columns.",
+            ),
+            annotation=Optional[list[str]],
+        )
+    )
+    params.append(
+        inspect.Parameter(
+            "omit_values",
+            inspect.Parameter.KEYWORD_ONLY,
+            default=Query(
+                default=None,
+                alias="omit",
+                description="Relationships or columns to omit.",
+            ),
+            annotation=Optional[list[str]],
+        )
+    )
+
+    def build_expand_omit(raw_kwargs: dict[str, Any], data: dict[str, Any]) -> None:
+        expand_values = raw_kwargs.get("expand_values")
+        only_values = raw_kwargs.get("only_values")
+        omit_values = raw_kwargs.get("omit_values")
+        data["expand"] = _normalize_list_values(expand_values)
+        data["only"] = _normalize_list_values(only_values)
+        data["omit"] = _normalize_list_values(omit_values)
+
+    builders.append(build_expand_omit)
+
     for field_name, field_info in filter_cls.model_fields.items():
+        if field_name in {"expand", "only", "omit"}:
+            continue
         field_type = _unwrap_optional(field_info.annotation)
 
         if field_type is None:
