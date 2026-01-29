@@ -1,4 +1,4 @@
-.PHONY: help install install-dev test lint format type-check clean build publish publish-test release bump-patch bump-minor bump-major bump-version bump-patch-tag bump-minor-tag bump-major-tag bump-patch-push bump-minor-push bump-major-push
+.PHONY: help install install-dev test lint format type-check clean build release
 
 # Default target
 help:
@@ -18,15 +18,7 @@ help:
 	@echo "Build & Publish:"
 	@echo "  make clean            Clean build artifacts"
 	@echo "  make build            Build the package"
-	@echo "  make publish          Build and publish to PyPI"
-	@echo "  make publish-test     Build and publish to TestPyPI"
-	@echo "  make release          Bump, commit, and publish to PyPI"
-	@echo ""
-	@echo "Version Management:"
-	@echo "  make bump-patch       Bump patch version (0.1.0 -> 0.1.1)"
-	@echo "  make bump-minor       Bump minor version (0.1.0 -> 0.2.0)"
-	@echo "  make bump-major       Bump major version (0.1.0 -> 1.0.0)"
-	@echo "  make bump-version     Set specific version (usage: make bump-version VERSION=0.2.0)"
+	@echo "  make release          Bump, tag, and optionally push"
 	@echo ""
 
 # Install package
@@ -68,58 +60,6 @@ clean:
 build: clean
 	python -m build
 
-# Publish to PyPI
-publish:
-	python scripts/publish.py
-
-# Publish to TestPyPI
-publish-test:
-	python scripts/publish.py --test
-
-# Bump, commit, and publish to PyPI
+# Bump, tag, and optionally push
 release:
 	python scripts/release.py
-
-# Bump patch version (0.1.0 -> 0.1.1)
-bump-patch:
-	python scripts/bump_version.py patch
-
-# Bump minor version (0.1.0 -> 0.2.0)
-bump-minor:
-	python scripts/bump_version.py minor
-
-# Bump major version (0.1.0 -> 1.0.0)
-bump-major:
-	python scripts/bump_version.py major
-
-# Set specific version
-bump-version:
-ifndef VERSION
-	@echo "Error: VERSION is required. Usage: make bump-version VERSION=0.2.0"
-	@exit 1
-endif
-	python scripts/bump_version.py $(VERSION)
-
-# Bump patch version and create git tag
-bump-patch-tag:
-	python scripts/bump_version.py patch --tag
-
-# Bump minor version and create git tag
-bump-minor-tag:
-	python scripts/bump_version.py minor --tag
-
-# Bump major version and create git tag
-bump-major-tag:
-	python scripts/bump_version.py major --tag
-
-# Bump patch version, tag, and push
-bump-patch-push:
-	python scripts/bump_version.py patch --push
-
-# Bump minor version, tag, and push
-bump-minor-push:
-	python scripts/bump_version.py minor --push
-
-# Bump major version, tag, and push
-bump-major-push:
-	python scripts/bump_version.py major --push

@@ -2,55 +2,22 @@
 
 This guide explains how to release a new version of fastapi-restkit.
 
-## Version Bump Script
+## Release Script (single entrypoint)
 
-The project includes a script to automate version bumping:
-
-```bash
-python scripts/bump_version.py <bump_type> [options]
-```
-
-### Bump Types
-
-| Type | Description | Example |
-|------|-------------|---------|
-| `patch` | Bug fixes, small changes | `0.1.0` → `0.1.1` |
-| `minor` | New features, backwards compatible | `0.1.0` → `0.2.0` |
-| `major` | Breaking changes | `0.1.0` → `1.0.0` |
-| `X.Y.Z` | Set specific version | `0.1.0` → `0.2.5` |
-
-### Options
-
-| Option | Description |
-|--------|-------------|
-| `--dry-run` | Preview changes without modifying files |
-| `--tag` | Create git tag after bump |
-| `--push` | Push commits and tags to remote (implies `--tag`) |
-
-### Examples
+The project ships a single release script:
 
 ```bash
-# Preview what would change
-python scripts/bump_version.py patch --dry-run
-
-# Bump patch version (0.1.0 → 0.1.1)
-python scripts/bump_version.py patch
-
-# Bump minor version (0.1.0 → 0.2.0)
-python scripts/bump_version.py minor
-
-# Bump major version (0.1.0 → 1.0.0)
-python scripts/bump_version.py major
-
-# Set specific version
-python scripts/bump_version.py 0.2.5
-
-# Bump and create git tag
-python scripts/bump_version.py patch --tag
-
-# Bump, tag, and push to remote
-python scripts/bump_version.py minor --push
+python scripts/release.py
 ```
+
+It will:
+
+- ensure your git working tree is clean
+- ask for the bump type (patch/minor/major)
+- update `pyproject.toml`
+- commit the bump
+- create an annotated tag `vX.Y.Z`
+- ask if you want to push commits and tags
 
 ---
 
@@ -62,12 +29,8 @@ python scripts/bump_version.py minor --push
 python scripts/release.py
 ```
 
-This script:
-
-- verifica se o git está limpo
-- pergunta o tipo de bump (patch/minor/major)
-- aplica o bump e commita
-- build + check + publish no PyPI usando `PYPI_TOKEN`
+This will create the version commit + tag. When the tag is pushed, the GitHub
+Action will build and publish the package to PyPI.
 
 ### 1. Prepare the Release
 
@@ -84,39 +47,13 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-### 2. Bump Version
+### 2. Run the release script
 
 ```bash
-# For a patch release (bug fixes)
-python scripts/bump_version.py patch --push
-
-# For a minor release (new features)
-python scripts/bump_version.py minor --push
-
-# For a major release (breaking changes)
-python scripts/bump_version.py major --push
+python scripts/release.py
 ```
 
-### 3. Build the Package
-
-```bash
-# Clean previous builds
-rm -rf dist/ build/
-
-# Build
-uv build
-```
-
-### 4. Publish to PyPI
-
-```bash
-# Upload to PyPI
-uv run twine upload dist/*
-
-# Enter credentials when prompted:
-# Username: __token__
-# Password: pypi-YOUR_API_TOKEN
-```
+If you choose to push, the tag will trigger the GitHub Action to publish to PyPI.
 
 ### 5. Create GitHub Release (Optional)
 
@@ -138,14 +75,8 @@ python scripts/release.py
 ```
 
 ```bash
-# Patch release
-python scripts/bump_version.py patch --push && rm -rf dist/ && uv build && uv run twine upload dist/*
-
-# Minor release
-python scripts/bump_version.py minor --push && rm -rf dist/ && uv build && uv run twine upload dist/*
-
-# Major release
-python scripts/bump_version.py major --push && rm -rf dist/ && uv build && uv run twine upload dist/*
+# Guided release (recommended)
+python scripts/release.py
 ```
 
 ---
@@ -181,7 +112,7 @@ Follow [Semantic Versioning](https://semver.org/):
 pip index versions fastapi-restkit
 
 # If version exists, bump again
-python scripts/bump_version.py patch --push
+python scripts/release.py
 ```
 
 ### Git Tag Already Exists
@@ -194,7 +125,7 @@ git tag -d v0.1.1
 git push origin :refs/tags/v0.1.1
 
 # Bump again
-python scripts/bump_version.py patch --push
+python scripts/release.py
 ```
 
 ### Build Fails
@@ -203,9 +134,6 @@ python scripts/bump_version.py patch --push
 # Clean everything
 rm -rf dist/ build/ *.egg-info/ .eggs/
 
-# Reinstall build tools
-uv add --dev build twine
-
-# Try again
-uv build
+# Check the GitHub Action logs for details
+https://github.com/cacenot/fastapi-restkit/actions
 ```

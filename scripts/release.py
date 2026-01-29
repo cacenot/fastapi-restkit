@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 """
-Release script: bump version, commit, and publish to PyPI.
+Release script: bump version, commit, create tag, and optionally push tag.
 
 Flow:
 - ensure git working tree is clean
 - ask for bump type (patch/minor/major)
 - apply bump to pyproject.toml
 - commit bump
-- build + check + publish to PyPI using PYPI_TOKEN
+- create git tag
+- ask whether to push commits and tags
 """
 
 from __future__ import annotations
 
-import os
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -29,18 +28,6 @@ def run_command(cmd: list[str], description: str, cwd: Path) -> None:
     print(f"🔨 {description}")
     print(f"{'=' * 70}")
     print(f"Running: {' '.join(cmd)}\n")
-    result = subprocess.run(cmd, cwd=cwd)
-    if result.returncode != 0:
-        print(f"\n❌ Error: {description} failed!")
-        sys.exit(result.returncode)
-    print(f"\n✅ {description} completed successfully!")
-
-
-def run_command_sanitized(cmd: list[str], description: str, cwd: Path, masked: str) -> None:
-    print(f"\n{'=' * 70}")
-    print(f"🔨 {description}")
-    print(f"{'=' * 70}")
-    print(f"Running: {masked}\n")
     result = subprocess.run(cmd, cwd=cwd)
     if result.returncode != 0:
         print(f"\n❌ Error: {description} failed!")
@@ -66,6 +53,37 @@ def read_current_version(pyproject_path: Path) -> str:
     return match.group(1)
 
 
+def parse_version(version: str) -> tuple[int, int, int]:
+    match = re.match(r"^(\d+)\.(\d+)\.(\d+)", version)
+    if not match:
+        raise ValueError(f"Invalid version format: {version}")
+    return int(match.group(1)), int(match.group(2)), int(match.group(3))
+
+
+def bump_version(current: str, bump_type: str) -> str:
+    major, minor, patch = parse_version(current)
+
+    if bump_type == "major":
+        return f"{major + 1}.0.0"
+    if bump_type == "minor":
+        return f"{major}.{minor + 1}.0"
+    if bump_type == "patch":
+        return f"{major}.{minor}.{patch + 1}"
+
+    raise ValueError(f"Invalid bump type: {bump_type}")
+
+
+def update_pyproject(pyproject_path: Path, old_version: str, new_version: str) -> None:
+    content = pyproject_path.read_text()
+    new_content = re.sub(
+        rf'^version\s*=\s*"{re.escape(old_version)}"',
+        f'version = "{new_version}"',
+        content,
+        flags=re.MULTILINE,
+    )
+    pyproject_path.write_text(new_content)
+
+
 def choose_bump_type() -> str:
     print("\nSelect version bump type:")
     print("  1) patch")
@@ -78,18 +96,9 @@ def choose_bump_type() -> str:
     return mapping[choice]
 
 
-def clean_build_artifacts(cwd: Path) -> None:
-    print("\n🧹 Cleaning build artifacts...")
-    patterns = ["dist", "build", "*.egg-info"]
-    for pattern in patterns:
-        for path in cwd.glob(pattern):
-            if path.is_dir():
-                print(f"  Removing {path}/")
-                shutil.rmtree(path)
-            elif path.is_file():
-                print(f"  Removing {path}")
-                path.unlink()
-    print("✅ Clean completed!")
+def ask_yes_no(prompt: str) -> bool:
+    answer = input(f"{prompt} [y/N]: ").strip().lower()
+    return answer == "y"
 
 
 def main() -> int:
@@ -104,20 +113,17 @@ def main() -> int:
         print("\n❌ Working tree is not clean. Commit or stash changes before release.")
         return 1
 
-    token = os.getenv("PYPI_TOKEN")
-    if not token:
-        print("\n❌ PYPI_TOKEN is not set. Aborting release.")
-        return 1
-
     bump_type = choose_bump_type()
 
-    run_command(
-        [sys.executable, "scripts/bump_version.py", bump_type],
-        f"Bumping version ({bump_type})",
-        cwd=project_root,
-    )
+    try:
+        current_version = read_current_version(pyproject_path)
+        new_version = bump_version(current_version, bump_type)
+    except ValueError as e:
+        print(f"Error: {e}")
+        return 1
 
-    new_version = read_current_version(pyproject_path)
+    update_pyproject(pyproject_path, current_version, new_version)
+    print(f"\n📦 Version bump: {current_version} → {new_version}")
 
     run_command(
         ["git", "add", "pyproject.toml"],
@@ -130,33 +136,17 @@ def main() -> int:
         cwd=project_root,
     )
 
-    clean_build_artifacts(project_root)
-    run_command([sys.executable, "-m", "build"], "Building package", cwd=project_root)
     run_command(
-        [sys.executable, "-m", "twine", "check", "dist/*"],
-        "Checking package",
+        ["git", "tag", "-a", f"v{new_version}", "-m", f"Release {new_version}"],
+        "Creating git tag",
         cwd=project_root,
     )
 
-    masked = "python -m twine upload --username __token__ --password *** dist/*"
-    run_command_sanitized(
-        [
-            sys.executable,
-            "-m",
-            "twine",
-            "upload",
-            "--username",
-            "__token__",
-            "--password",
-            token,
-            "dist/*",
-        ],
-        "Publishing package to PyPI",
-        cwd=project_root,
-        masked=masked,
-    )
+    if ask_yes_no("\nPush commit and tag to remote?"):
+        run_command(["git", "push"], "Pushing commits", cwd=project_root)
+        run_command(["git", "push", "--tags"], "Pushing tags", cwd=project_root)
 
-    print(f"\n✅ Release completed: {new_version}")
+    print(f"\n✅ Release prepared: v{new_version}")
     return 0
 
 
