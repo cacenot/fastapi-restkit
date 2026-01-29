@@ -9,6 +9,12 @@ Este guia mostra como criar e usar filtros e ordenação no FastAPI RestKit, tan
   - [Criando um FilterSet](#criando-um-filterset)
   - [Usando Filtros no Endpoint](#usando-filtros-no-endpoint)
   - [Parâmetros de URL para Filtros](#parâmetros-de-url-para-filtros)
+    - [Projection (expand / omit / only)](#projection-expand--omit--only)
+        - [Expandindo Relacionamentos (expand)](#expandindo-relacionamentos-expand)
+                - [Usando em endpoints de detalhe (standalone)](#usando-em-endpoints-de-detalhe-standalone)
+        - [Omitindo Relacionamentos e Colunas (omit)](#omitindo-relacionamentos-e-colunas-omit)
+        - [Whitelist de Campos (only)](#whitelist-de-campos-only)
+        - [Regras de Precedência](#regras-de-precedência)
 - [Sorting (Ordenação)](#sorting-ordenação)
   - [Criando um SortingSet](#criando-um-sortingset)
   - [Usando Sorting no Endpoint](#usando-sorting-no-endpoint)
@@ -289,6 +295,203 @@ GET /logs?timestamp[from]=2024-01-15T00:00:00-03:00&timestamp[to]=2024-01-15T23:
 # Range numérico
 GET /products?price[min]=10&price[max]=100
 ```
+
+---
+
+## Projection (expand / omit / only)
+
+Além de filtros (WHERE) e sorting (ORDER BY), o `FilterSet` pode controlar **o que é carregado do banco**
+via opções de eager loading e projeção de colunas.
+
+Esses recursos existem para:
+
+- reduzir **N+1** e round-trips no banco
+- evitar carregar relacionamentos/colunas desnecessários
+- dar mais controle para endpoints que precisam de performance
+
+### Expandindo Relacionamentos (expand)
+
+O parâmetro `expand` serve para **eager-load** de relacionamentos.
+
+Por padrão, o RestKit usa `selectinload` (mais seguro para paginação e coleções).
+Você pode permitir `joinedload` em relacionamentos específicos usando um allowlist no backend.
+
+#### Configuração
+
+```python
+from typing import Optional
+from pydantic import Field
+from fastapi_restkit.filterset import FilterSet
+from fastapi_restkit.filters import SearchFilter
+
+
+class ProductFilterSet(FilterSet):
+    name: Optional[SearchFilter] = Field(default_factory=SearchFilter)
+
+    class Config:
+        # api_name -> relationship path no SQLModel
+        expandable = {
+            "owner": "owner",               # Product.owner
+            "reviews": "reviews",           # Product.reviews
+            "owner_company": "owner.company" # Product.owner.company (dot path)
+        }
+
+        # Relacionamentos expandidos por padrão (sem ?expand=...)
+        default_expand = {"owner"}
+
+        # allowlist para joinedload (regras do backend)
+        default_joined = {"owner"}
+
+        # Se True, expande todos os campos em expandable por padrão (use com cautela)
+        expand_all = False
+```
+
+#### Uso no endpoint
+
+```python
+from fastapi import Depends
+from sqlmodel import Session, select
+from fastapi_restkit.filterset import filter_as_query
+
+
+@router.get("/products")
+async def list_products(
+    session: Session = Depends(get_session),
+    filters: ProductFilterSet = Depends(filter_as_query(ProductFilterSet)),
+):
+    query = select(Product)
+    query = filters.apply_to_query(query, Product)
+    query = filters.apply_expands_to_query(query, Product)
+    return session.exec(query).all()
+```
+
+#### URLs
+
+```bash
+# Aplica default_expand (owner)
+GET /products
+
+# Expande mais relacionamentos
+GET /products?expand=reviews
+GET /products?expand=reviews&expand=owner_company
+```
+
+### Usando em endpoints de detalhe (standalone)
+
+Você também pode usar `expand` / `omit` / `only` em endpoints de detalhe (ex.: `GET /users/{id}`)
+**sem precisar de filtros**.
+
+A ideia é criar um `FilterSet` “de projeção”, com apenas o `Config` (sem campos de filtro), e usar
+apenas `apply_expands_to_query()`.
+
+```python
+from fastapi import Depends
+from sqlmodel import Session, select
+from fastapi_restkit.filterset import FilterSet, filter_as_query
+
+
+class UserDetailProjection(FilterSet):
+    class Config:
+        expandable = {
+            "orders": "orders",
+            "company": "company",
+        }
+        column_fields = {
+            "id": "id",
+            "email": "email",
+            "name": "name",
+        }
+        default_joined = {"company"}
+
+
+@router.get("/users/{user_id}")
+async def get_user(
+    user_id: int,
+    session: Session = Depends(get_session),
+    projection: UserDetailProjection = Depends(filter_as_query(UserDetailProjection)),
+):
+    query = select(User).where(User.id == user_id)
+    query = projection.apply_expands_to_query(query, User)
+    return session.exec(query).one()
+```
+
+```bash
+# Sem expand
+GET /users/123
+
+# Com expand
+GET /users/123?expand=orders
+
+# Whitelist
+GET /users/123?only=company,name
+```
+
+### Omitindo Relacionamentos e Colunas (omit)
+
+O parâmetro `omit` serve para **remover** relacionamentos e/ou colunas do carregamento.
+
+1) Para omit de relacionamentos: basta configurar `Config.expandable`.
+2) Para omit de colunas do model principal: configure `Config.column_fields`.
+
+#### Omitindo colunas do model principal
+
+```python
+class ProductFilterSet(FilterSet):
+    class Config:
+        column_fields = {
+            "description": "description",
+            "internal_notes": "internal_notes",
+            "price": "price",
+        }
+
+        # Estratégia de omit para colunas:
+        # - "defer" (default): adia o carregamento dessas colunas
+        # - "load_only": carrega apenas as colunas não omitidas (baseado em column_fields)
+        column_omit_mode = "defer"
+```
+
+```bash
+GET /products?omit=description
+GET /products?omit=description,internal_notes
+```
+
+Nota: se você omitir uma coluna e o serializer/schema tentar acessá-la, o ORM pode disparar
+um lazy-load (custo extra) dependendo do contexto e do Session.
+
+### Whitelist de campos (only)
+
+`only` funciona como uma **whitelist** (lista do que é permitido incluir) e é útil quando você quer
+uma resposta “enxuta” por default.
+
+`only` pode referenciar:
+
+- relacionamentos definidos em `Config.expandable`
+- colunas definidas em `Config.column_fields`
+
+Para colunas, `only` sempre usa `load_only`.
+
+```bash
+# Retorna apenas a coluna name (desde que name esteja em Config.column_fields)
+GET /products?only=name
+
+# Retorna apenas o relacionamento owner (desde que owner esteja em Config.expandable)
+GET /products?only=owner
+
+# Misturando colunas e relacionamentos
+GET /products?only=name,owner
+```
+
+### Regras de precedência
+
+Regras importantes para previsibilidade e performance:
+
+1) `only` tem precedência sobre `expand` e `omit`
+   - se `only` for enviado, as expansões são limitadas ao subconjunto em `only`
+   - e as colunas carregadas também ficam limitadas ao subconjunto em `only`
+2) `omit` remove itens de `default_expand` e do `expand` da request
+3) `expand_all=True` ignora `default_expand`, mas ainda respeita `omit` (e `only`)
+
+---
 
 ---
 
@@ -644,3 +847,9 @@ GET /products?is_active=true&category=electronics&price[min]=100&sort_by=price:a
 6. **Combine com paginação**: Use junto com `PaginationParams` para endpoints completos de listagem.
 
 7. **Tratamento de erros**: Os filtros lançam `InvalidFormatError` para valores inválidos - trate-os adequadamente.
+
+8. **Use `expand` com parcimônia**: `selectinload` é o padrão por ser seguro para 1:N e paginação.
+
+9. **Evite `joinedload` indiscriminado**: habilite apenas via `default_joined` (allowlist backend) para relações bem conhecidas.
+
+10. **Prefira `only` para payloads enxutos**: ótimo para telas/listagens onde poucos campos são necessários.

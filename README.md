@@ -222,6 +222,143 @@ GET /products?is_active=true&category=electronics&price[min]=100
 
 ---
 
+## Relationship Expansion (expand / omit)
+
+You can configure relationship expansion directly in a `FilterSet` using `expand` and `omit` query params.
+By default, expansions use `selectinload`. Use `default_joined` to allow `joinedload` for specific
+relationships.
+
+```python
+from typing import Optional
+from sqlmodel import select
+from fastapi_restkit.filterset import FilterSet, filter_as_query
+
+
+class ProductFilterSet(FilterSet):
+    name: Optional[SearchFilter] = Field(default_factory=SearchFilter)
+
+    class Config:
+        # api_name -> relationship path
+        expandable = {
+            "owner": "owner",         # Product.owner
+            "reviews": "reviews",     # Product.reviews
+        }
+        # Always expand owner by default
+        default_expand = {"owner"}
+        # Only owner uses joinedload; reviews uses selectinload
+        default_joined = {"owner"}
+
+
+@app.get("/products")
+async def list_products(
+    session: Session = Depends(get_session),
+    filters: ProductFilterSet = Depends(filter_as_query(ProductFilterSet)),
+):
+    query = select(Product)
+    query = filters.apply_to_query(query, Product)
+    query = filters.apply_expands_to_query(query, Product)
+    return session.exec(query).all()
+```
+
+**URL Examples:**
+```bash
+# Default expansion (owner) is applied
+GET /products
+
+# Expand reviews (selectinload)
+GET /products?expand=reviews
+
+# Omit default expansion
+GET /products?omit=owner
+```
+
+Notes:
+- `expand` and `omit` only accept fields defined in `Config.expandable`.
+- `selectinload` is always the default strategy.
+- `joinedload` is only used for relationships in `Config.default_joined`.
+- `only` acts as a whitelist and has precedence over `expand` and `omit`.
+
+### Using projection in detail endpoints
+
+You can also use `expand` / `omit` / `only` in detail endpoints (e.g. `GET /users/{id}`) without
+defining any filter fields.
+
+Create a projection-only `FilterSet` (only `Config`) and apply it with
+`apply_expands_to_query()`:
+
+```python
+from fastapi_restkit.filterset import FilterSet, filter_as_query
+
+
+class UserDetailProjection(FilterSet):
+    class Config:
+        expandable = {"orders": "orders", "company": "company"}
+
+
+@app.get("/users/{user_id}")
+async def get_user(
+    user_id: int,
+    session: Session = Depends(get_session),
+    projection: UserDetailProjection = Depends(filter_as_query(UserDetailProjection)),
+):
+    query = select(User).where(User.id == user_id)
+    query = projection.apply_expands_to_query(query, User)
+    return session.exec(query).one()
+```
+
+### Omitting columns from the main model
+
+`omit` in `FilterSet` can also omit columns from the main model when you define
+`Config.column_fields`. The default omission strategy is `defer`, but you can
+switch to `load_only` with `Config.column_omit_mode`.
+
+```python
+class ProductFilterSet(FilterSet):
+    class Config:
+        column_fields = {
+            "description": "description",
+            "internal_notes": "internal_notes",
+        }
+        # "defer" (default) or "load_only"
+        column_omit_mode = "defer"
+
+
+@app.get(
+    "/products",
+    response_model=PaginatedResponse[ProductRead],
+)
+async def list_products(
+    session: Session = Depends(get_session),
+    filters: ProductFilterSet = Depends(filter_as_query(ProductFilterSet)),
+    pagination: PaginationParams = Depends(),
+):
+    query = select(Product)
+    query = filters.apply_to_query(query, Product)
+    query = filters.apply_expands_to_query(query, Product)
+    return await paginate(session, query, pagination)
+```
+
+**URL Examples:**
+```bash
+GET /products?omit=description
+GET /products?omit=description,internal_notes
+```
+
+### Only include specific fields
+
+Use `only` to return only specific relationships or columns. `only` has
+precedence over `expand` and `omit`.
+
+```bash
+# Only the owner relationship and name column
+GET /products?only=owner,name
+```
+
+For strict contracts, define a dedicated response schema without those columns, or
+use `response_model_exclude` when appropriate.
+
+---
+
 ## Sorting
 
 ### Creating a SortingSet
