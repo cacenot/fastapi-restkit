@@ -56,6 +56,19 @@ python scripts/bump_version.py minor --push
 
 ## Complete Release Process
 
+### 0. One-command Release (recommended)
+
+```bash
+python scripts/release.py
+```
+
+This script:
+
+- verifica se o git está limpo
+- pergunta o tipo de bump (patch/minor/major)
+- aplica o bump e commita
+- build + check + publish no PyPI usando `PYPI_TOKEN`
+
 ### 1. Prepare the Release
 
 ```bash
@@ -118,6 +131,11 @@ uv run twine upload dist/*
 ## Quick Release Commands
 
 One-liner for a complete release:
+
+```bash
+# Guided release (recommended)
+python scripts/release.py
+```
 
 ```bash
 # Patch release

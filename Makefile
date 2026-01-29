@@ -1,4 +1,4 @@
-.PHONY: help install install-dev test lint format type-check clean build publish publish-test bump-patch bump-minor bump-major bump-version bump-patch-tag bump-minor-tag bump-major-tag bump-patch-push bump-minor-push bump-major-push
+.PHONY: help install install-dev test lint format type-check clean build publish publish-test release bump-patch bump-minor bump-major bump-version bump-patch-tag bump-minor-tag bump-major-tag bump-patch-push bump-minor-push bump-major-push
 
 # Default target
 help:
@@ -20,6 +20,7 @@ help:
 	@echo "  make build            Build the package"
 	@echo "  make publish          Build and publish to PyPI"
 	@echo "  make publish-test     Build and publish to TestPyPI"
+	@echo "  make release          Bump, commit, and publish to PyPI"
 	@echo ""
 	@echo "Version Management:"
 	@echo "  make bump-patch       Bump patch version (0.1.0 -> 0.1.1)"
@@ -74,6 +75,10 @@ publish:
 # Publish to TestPyPI
 publish-test:
 	python scripts/publish.py --test
+
+# Bump, commit, and publish to PyPI
+release:
+	python scripts/release.py
 
 # Bump patch version (0.1.0 -> 0.1.1)
 bump-patch:
